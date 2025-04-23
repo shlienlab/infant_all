@@ -1,0 +1,186 @@
+---
+title: "Figure 1: Cohort Overview"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+execute: 
+  warning: false
+  error: false
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+    toc: true
+---
+
+
+```{r setup}
+library(tidyverse)
+library(ComplexHeatmap)
+library(readxl)
+library(here)
+
+dir.create(here("plots"), showWarnings = F, recursive = T)
+```
+
+# Load data
+
+```{r}
+table_s1 <- read_excel(path = here("paper_data", "Supplemental_Tables_1_5.xlsx"), sheet = 1, skip = 1)
+```
+
+
+# Clinical Proportion barplot
+
+Calculate frequencies of WBC and Age categories
+
+```{r}
+wbc <- with(table_s1 %>% filter(KMT2A_clinical_status == "Negative"), prop.table(table(WBC = WBC_group))) %>%
+  data.frame() %>%
+  pivot_longer(cols = 1, names_to = "Category", values_to = "Variable")
+
+age <- with(table_s1 %>% filter(KMT2A_clinical_status == "Negative"), prop.table(table(Age = Age_Months_Cat))) %>%
+  data.frame() %>%
+  pivot_longer(cols = 1, names_to = "Category", values_to = "Variable")
+
+our_count_dat <- rbind(wbc, age)
+our_count_dat
+```
+
+## Interfant-99 Data
+
+We can add relevant information from the [supplemental](https://ascopubs.org/doi/suppl/10.1200/JCO.19.00261/suppl_file/DS_JCO.19.00261.pdf) of the Interfant-06 study (page 20) of the relative proportions of risk characteristics in 167 non-KMT2Ar infants
+
+```{r}
+interfant_count_dat <- readxl::read_excel(path = here("paper_data/interfant_06_LR_proportion.xlsx")) %>%
+  group_by(Category) %>%
+  mutate(Freq = round(Count / sum(Count), 3)) %>%
+  ungroup()
+
+interfant_count_dat
+```
+
+## Plot
+
+Merge interfant and SK data to plot bars side-by-side
+
+```{r}
+our_count_dat$Cohort <- "This Study"
+interfant_count_dat$Cohort <- "Interfant"
+
+dat_merge <- rbind(our_count_dat, dplyr::select(interfant_count_dat, -Count))
+
+dat_merge[dat_merge$Category == "Age", "Category"] <- "Age\n(months)"
+dat_merge[dat_merge$Category == "WBC", "Category"] <- "WBC\n(10^9/L)"
+
+
+prop_barplot <- dat_merge %>%
+  filter(Category != "Gender") %>%
+  ggplot(aes(y = Variable, x = Freq)) +
+  geom_col(aes(fill = Cohort), position = "dodge", width = 0.75) +
+  facet_grid(Category ~ ., space = "free", scales = "free", switch = "y") +
+  labs(y = NULL, x = "Proportion") +
+  theme_classic(base_size = 16) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 1.05)) +
+  scale_fill_manual(guide = guide_legend(reverse = TRUE), values = c("grey75", "black")) +
+  theme(strip.placement = "outside", strip.background = element_blank(), strip.text.x = element_text(size = 12), axis.title.y = element_text(size = 12), legend.position = "bottom", legend.direction = "vertical")
+
+ggsave(prop_barplot, filename = here("plots/", "prop_barplot.pdf"), width = 3, height = 4)
+
+prop_barplot
+```
+
+# Oncoprint
+
+```{r, fig.width=11, fig.height=15}
+mut_pal <- c(Missense = "#3B4992FF", Fusion = "#EE0000FF", `In frame indel` = "#008B45FF",
+`Deep deletion` = "#631879FF", `Frameshift indel` = "#008280FF",
+Complex = "#BB0021FF", `Splice site` = "#5F559BFF", TSS = "#A20056FF"
+)
+
+# reorder with comut order
+rownames(table_s1) <- table_s1$Sample
+
+comut_df <- read.table(file = here("paper_data", "onco_table.txt"), header = T, sep = "\t")
+
+comut_mat <- comut_df %>%
+  filter(sample %in% table_s1$Sample) %>%
+  pivot_wider(id_cols = sample, names_from = category, values_from = value, values_fn = function(x) paste0(x, collapse = ";"), values_fill = "") %>%
+  column_to_rownames("sample") %>%
+  as.matrix() %>%
+  t
+
+# Add the empty samples
+samps_add <- setdiff(table_s1$Sample, colnames(comut_mat))
+
+samps_add_mat <- matrix(data = "", nrow = nrow(comut_mat), ncol = length(samps_add), dimnames = list(rownames(comut_mat), samps_add))
+
+comut_mat_final <- cbind(comut_mat, samps_add_mat)
+
+table_s1 <- table_s1[colnames(comut_mat_final),]
+
+alter_fun = list(
+    background = alter_graphic("rect", fill = "#CCCCCC"),   
+    Missense = alter_graphic("rect", fill = mut_pal["Missense"]),
+    Fusion = alter_graphic("rect", fill = mut_pal["Fusion"]),
+    `In frame indel` = alter_graphic("rect", height = 0.33, fill = mut_pal["In frame indel"]),
+    `Deep deletion` = alter_graphic("rect", height = 1, fill = mut_pal["Deep deletion"]),
+    `Frameshift indel` = alter_graphic("rect", height = 0.33, fill = mut_pal["Frameshift indel"]),
+    `Complex` = alter_graphic("rect", height = 1, width = 0.33, fill = mut_pal["Complex"]),
+    `Splice site` = alter_graphic("rect", height = 1, fill = mut_pal["Splice site"]),
+    TSS = alter_graphic("rect", height = 1, fill = mut_pal["TSS"])
+)
+
+anno_cols <- list("WBC" = c("<300" = "#E3B1B1", ">=300" = "#E33F3F"),
+                  # "Immunophenotype" = c("B-ALL" = "orchid1", "T-ALL" = "darkgoldenrod1"),
+                  "Age" = c('<3' = '#b6b6d8', '3-6' = '#8683bd', '6-9' = '#61409b', '9-12' = '#3f007d'),
+                  "WTS QC" = c("pass" = "black", "fail" =  "grey90"),
+                  "WGStum" = c("y" = "black", "n" = "grey90"),
+                  "WGSnorm" = c("y" = "black", "n" = "grey90"))
+
+anno_labels <- c("Alternations", names(anno_cols))
+anno_labels[anno_labels == "Age"] <- "Age (months)"
+anno_labels[anno_labels == "WBC"] <- "WBC (10^9/l)"
+
+
+ht <- oncoPrint(comut_mat_final,
+    alter_fun = alter_fun, 
+    col = mut_pal,
+    show_column_names = TRUE,
+    right_annotation = rowAnnotation(
+      row_barplot = anno_oncoprint_barplot(show_fraction = TRUE, border = T)),
+    top_annotation = HeatmapAnnotation(cbar = anno_oncoprint_barplot(border = F),
+                                       WBC = table_s1$WBC_group,
+                                       # Immunophenotype = table_s1$ALL_type,
+                                       Age = table_s1$Age_Months_Cat,
+                                       col = anno_cols, 
+                                       "WTS QC" = table_s1$RNA_QC,
+                                       WGStum = table_s1$WGS_tum,
+                                       WGSnorm = table_s1$WGS_norm,
+                                       # annotation_label = anno_labels, 
+                                       annotation_name_align = T, 
+                                       annotation_name_side = "left", 
+                                       annotation_name_gp = list(cex = 0.7), 
+                                       simple_anno_size = unit(0.4, "cm")
+                                       ),
+    remove_empty_columns = FALSE,
+    pct_side = "left", pct_gp = gpar(fontsize = 10),
+    row_names_side = "right",
+    column_split = table_s1$ALL_type,
+    heatmap_legend_param = list(title = "Mutation Type", 
+                                legend_direction = "horizontal",
+                                ncol = 4,
+                                legend_width = unit(5, "cm")
+                                ))
+pdf(file = here("plots/ALL_oncoprint.pdf"), width = 8, height = 15)
+draw(ht, heatmap_legend_side = "bottom", annotation_legend_side = "bottom")
+dev.off()
+ht
+```
+
+
+# Session Info
+
+```{r}
+devtools::session_info()
+```
+
